@@ -1,0 +1,37 @@
+Windows 集成与部署流程
+
+1) 资产生成
+   使用 host-tools\abtool CLI 将 GIF/APNG/视频转换为帧并写出 manifest:
+     abtool extract splash.gif out_frames --width 640 --height 360 --fps 24
+   打包为容器:
+     abtool pack out_frames\sequence.anim.json build\splash.anim
+   经过上述步骤可得到 build\splash.anim，AnimeBoot.efi 默认查找该文件。
+
+2) EDK II 构建
+   在 EDK2 工作区执行:
+     edksetup.bat Rebuild
+     build -p AnimeBootPkg\AnimeBootPkg.dsc -b RELEASE -a X64 -t VS2022
+   生成的 EFI 位于 Build\AnimeBoot\RELEASE_X64\AnimeBootPkg\Application\AnimeBoot\AnimeBoot\AnimeBoot.efi。
+
+3) 自动部署到 ESP
+   以管理员身份打开 PowerShell，然后运行:
+     scripts\Install-AnimeBoot.ps1 `
+         -EfiBinary Build\AnimeBoot\RELEASE_X64\AnimeBootPkg\Application\AnimeBoot\AnimeBoot\AnimeBoot.efi `
+         -AnimSource build\splash.anim `
+         -EspMountPoint S: `
+         -BootEntryDescription "AnimeBoot Splash"
+   Install-AnimeBoot.ps1 会执行以下动作:
+     - 挂载 ESP（默认使用 S:，可通过参数切换到其它空闲盘符）。
+     - 将 AnimeBoot.efi 和 splash.anim 复制到 \EFI\AnimeBoot。若 AnimSource 指向目录，则会整目录拷贝（用于 loose files 模式）。
+     - 创建或更新一个 firmware 启动项目，目标路径为 \EFI\AnimeBoot\AnimeBoot.efi，并把它插入 displayorder 首位，让固件先执行 AnimeBoot。AnimeBoot.efi 会在动画结束后自动 chainload \EFI\Microsoft\Boot\bootmgfw.efi。
+   若只想布置文件而暂时不修改 firmware 条目，可追加 -SkipBcd。
+
+4) 卸载与回滚
+   执行 scripts\Remove-AnimeBoot.ps1 -EspMountPoint S: -RemoveFiles
+   该脚本会删除 \EFI\AnimeBoot，并从 firmware displayorder 中移除 AnimeBoot boot entry，最后在需要时卸载 ESP。
+
+5) 注意事项
+   - 在修改 firmware displayorder 之前，建议通过 bcdedit /enum firmware 备份当前顺序。
+   - 确保 AnimeBoot.efi 与 \EFI\Microsoft\Boot\bootmgfw.efi 同处于同一 ESP，脚本不会覆盖原始 bootmgfw.efi。
+   - 若系统启用 Secure Boot，请按照 secure_boot.txt 中的步骤对 AnimeBoot.efi 签名后再执行部署，否则固件会拒绝加载未签名的应用。
+

@@ -1,0 +1,13 @@
+[Defines]
+  DEC_VERSION                    = 0x0001001A
+  PACKAGE_NAME                   = AnimeBootPkg
+  PACKAGE_GUID                   = B1A6E4A2-37E7-4C9C-A5D1-38E65379B9C3
+  PACKAGE_VERSION                = 0.1
+
+[Includes]
+  Include
+
+[LibraryClasses]
+  GopBlitterLib   | AnimeBootPkg/Library/GopBlitter/GopBlitter.inf
+  DisplayMathLib  | AnimeBootPkg/Library/DisplayMath/DisplayMath.inf
+

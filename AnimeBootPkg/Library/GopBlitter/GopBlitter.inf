@@ -1,0 +1,22 @@
+[Defines]
+  INF_VERSION                    = 0x0001001A
+  BASE_NAME                      = GopBlitterLib
+  FILE_GUID                      = 9B079825-8D3D-42A9-A2ED-AD27E5A5479C
+  MODULE_TYPE                    = BASE
+  VERSION_STRING                 = 0.1
+  LIBRARY_CLASS                  = GopBlitterLib
+
+[Sources]
+  GopBlitter.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  AnimeBootPkg/AnimeBootPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  UefiLib
+  UefiBootServicesTableLib
+  MemoryAllocationLib
+

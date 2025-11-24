@@ -1,0 +1,61 @@
+QEMU 与物理机测试矩阵
+
+1) 准备材料
+   - Build\AnimeBoot\RELEASE_X64\...\AnimeBoot.efi（使用 RELEASE 配置）。
+   - build\splash.anim 或 loose manifest 目录。
+   - OVMF 固件：
+     * 非 Secure Boot：OVMF_CODE.fd + OVMF_VARS.fd（可来自 edk2 OvmfPkg）。
+     * Secure Boot：OVMF_CODE.secboot.fd + OVMF_VARS.secboot.fd（含默认 PK/KEK/DB）。
+   - Python 3（用于快速生成 FAT 镜像，可使用 mtools 或 virt-make-fs）。
+
+2) 生成测试 ESP 镜像
+   示例如下（Windows 环境可在 WSL 或 Git Bash 中运行）:
+     mkdir -p esp/EFI/AnimeBoot
+     cp Build/.../AnimeBoot.efi esp/EFI/AnimeBoot/AnimeBoot.efi
+     cp build/splash.anim esp/EFI/AnimeBoot/splash.anim
+     # 可选：为固件直接提供默认启动项
+     cp Build/.../AnimeBoot.efi esp/EFI/Boot/Bootx64.efi
+     mkfs.fat -C animeboot.img 64M
+     mcopy -s -i animeboot.img esp/* ::
+
+3) 在 QEMU 中启动（非 Secure Boot）
+     qemu-system-x86_64 ^
+       -m 1024 ^
+       -bios OVMF_CODE.fd ^
+       -drive if=pflash,format=raw,unit=1,file=OVMF_VARS.fd ^
+       -drive format=raw,file=animeboot.img ^
+       -serial stdio
+   观察点：
+     - 动画能否循环播放一次后自动 chainload Windows Boot Manager（若未提供 bootmgfw.efi，可在调试版本中观察到“LoadImage failed”日志）。
+     - Loose files 模式：删除 splash.anim，只保留 manifest + BMP，确认仍可播放。
+     - 键盘中断：在播放过程中按任意键，确认动画立即退出并继续后续流程。
+
+4) Secure Boot in QEMU
+     qemu-system-x86_64 ^
+       -m 1024 ^
+       -bios OVMF_CODE.secboot.fd ^
+       -drive if=pflash,format=raw,unit=1,file=OVMF_VARS.secboot.fd ^
+       -drive format=raw,file=animeboot.img ^
+       -serial stdio
+   步骤：
+     - 使用 docs/secure_boot.txt 路线 A 的测试证书，先对 AnimeBoot.efi 签名。
+     - 通过 KeyTool.efi 导入测试 PK/KEK/DB，并确认 Secure Boot 开启。
+     - 启动后若签名正确，应正常播放；若改用未签名二进制，应被固件阻止，从而验证链路有效。
+
+5) 物理硬件测试
+   - 使用 scripts\Install-AnimeBoot.ps1 复制并注册固件启动项，确认在 Legacy/CSM 关闭且 Secure Boot 启用的机器上运行。
+   - 记录下列场景：
+     * 正常播放一次并链到 Windows。
+     * AnimSource 改为 manifest 目录，确认为 Loose 模式仍然可用。
+     * 将 manifest loop_count 设为 0，验证播放器可无限循环并可通过按键跳出。
+     * 删除 splash.anim 或使容器损坏，确认 AnimeBoot 直接跳过动画并继续启动。
+     * Secure Boot 开启 + 未签名 AnimeBoot.efi，固件应拒绝执行；改用签名版后恢复正常。
+
+6) 日志收集
+   - Debug 版本可通过 -D DEBUG_INFO 编译并在 UEFI Shell 中设置 ConOut，必要时借助串口（QEMU -serial stdio 已示范）。
+   - 如需在硬件上收集日志，可修改 AnimeBootPkg/Application/AnimeBoot/AnimeBoot.inf 将 DEBUG 输出映射至串口（EfiSerialIoProtocol），或在 BIOS Setup 中开启 “Serial Console Redirection”。
+
+7) 自动化建议
+   - 在 CI 中运行：构建 → sbsign → 生成 esp 镜像 → qemu-system-x86_64 --serial stdio，解析串口输出，确认包含 “Firmware entry ready” / “Chainload succeeded” 等关键字。
+   - 物理机可通过 Windows Task Scheduler 定期执行 scripts\Install-AnimeBoot.ps1 与 scripts\Remove-AnimeBoot.ps1，结合远程管理卡捕捉启动画面，人工审核显示效果。
+

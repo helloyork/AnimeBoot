@@ -1,0 +1,18 @@
+[Defines]
+  INF_VERSION                    = 0x0001001A
+  BASE_NAME                      = DisplayMathLib
+  FILE_GUID                      = E6BCE7F7-94AF-4E73-82A7-9BBAD3E6B08F
+  MODULE_TYPE                    = BASE
+  VERSION_STRING                 = 0.1
+  LIBRARY_CLASS                  = DisplayMathLib
+
+[Sources]
+  DisplayMath.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  AnimeBootPkg/AnimeBootPkg.dec
+
+[LibraryClasses]
+  BaseLib
+

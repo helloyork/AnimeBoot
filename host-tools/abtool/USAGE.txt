@@ -1,0 +1,13 @@
+abtool CLI
+==========
+
+Subcommands:
+  extract  Convert GIF/APNG/video into resized BMP/RAW frames plus manifest.
+  pack     Pack manifest + frames into AnimeBoot .anim container.
+  preview  Play a .anim file in a desktop window for quick inspection.
+
+Examples:
+  abtool extract splash.gif out_frames --width 640 --height 360 --fps 24
+  abtool pack out_frames\\splash.anim.json build\\splash.anim
+  abtool preview build\\splash.anim
+

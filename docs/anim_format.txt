@@ -1,0 +1,98 @@
+AnimeBoot 动画容器（*.anim）规范
+==================================
+
+1. 整体结构
+------------
+文件由“容器头 + manifest JSON + 对齐填充 + 帧索引表 + 帧数据块”组成，所有多字节字段采用 little-endian：
+
+```
+struct AnimPackageHeader {
+    char     Magic[8];        // 固定 "ABANIM\0"
+    uint16_t VersionMajor;    // 当前为 1
+    uint16_t VersionMinor;    // 当前为 0
+    uint16_t HeaderSize;      // sizeof(AnimPackageHeader)
+    uint16_t Flags;           // bit0: has manifest json; bit1: raw frame payload
+    uint32_t ManifestSize;    // bytes of UTF-8 JSON manifest
+    uint32_t FrameCount;
+    uint32_t FrameTableOffset;// 相对于文件开头
+    uint32_t FrameDataOffset; // 第一帧数据起始偏移
+    uint32_t LogicalWidth;    // manifest 默认渲染分辨率
+    uint32_t LogicalHeight;
+    uint32_t PixelFormat;     // 0 = raw BGRA32, 1 = BMP 32bpp
+    uint32_t TargetFps;       // 1000 表示 1000x 帧率，以 1000/TargetFps 秒为一帧
+    uint32_t LoopCount;       // 0 表示无限循环
+    uint32_t Reserved[6];     // 预留未来字段，写 0
+};
+```
+
+帧索引表由 `FrameCount` 个条目组成：
+
+```
+struct AnimFrameDesc {
+    uint64_t Offset;   // 相对于 FrameDataOffset 的偏移
+    uint32_t Length;   // 帧数据长度
+    uint32_t Duration; // 微秒，若为 0 则使用全局 TargetFps
+};
+```
+
+2. Manifest 字段
+----------------
+Manifest 采用 UTF-8 JSON，字段均为可选，未指定时使用 header 中的值：
+
+```
+{
+  "logical_width": 640,
+  "logical_height": 360,
+  "scaling": "letterbox",   // letterbox | center | fill
+  "background": "#000000",
+  "max_memory": 67108864,   // bytes, 默认 64MB
+  "loop_count": 2,
+  "frame_duration_us": 41666,
+  "allow_key_skip": true,
+  "max_total_duration_ms": 8000,
+  "input_timeout_ms": 0,    // 0 表示不等待输入
+  "notes": "24fps splash"
+}
+```
+
+3. Loose files manifest
+-----------------------
+`Loose` 模式使用单独的 manifest 文件（推荐扩展名 `.anim.json`），字段与容器 manifest 相同，额外增加帧文件列表：
+
+```
+{
+  "frames": [
+    {"path": "frame0001.bmp", "duration_us": 41666},
+    {"path": "frame0002.bmp"}
+  ]
+}
+```
+
+当 `frames` 为空或缺失时，默认按 `frame%04d.bmp` 顺序加载。
+
+4. 像素格式约束
+---------------
+- 默认像素格式：BGRA32（蓝、绿、红、保留），每像素 4 字节。
+- BMP 解析要求：BITMAPFILEHEADER + BITMAPINFOHEADER，24/32 bpp，无压缩。
+- 每帧尺寸必须与 manifest `logical_width/height` 匹配，否则加载器直接拒绝。
+
+5. 内存与安全限制
+-----------------
+- `logical_width * logical_height` 不得超过 1920 × 1080，且单帧大小上限为 16 MB。
+- 双缓冲意味着播放器会尝试分配 `frame_size * 2`，若超出 manifest `max_memory` 或加载器默认 64 MB 限制，将拒绝播放。
+- `FrameCount` 上限 4096，`FrameDataOffset + 最大帧长度` 不得超过 2 GiB。
+- `LoopCount` 最大 100；若 manifest 请求更大循环，播放器强制截断并记录日志。
+- 所有偏移/长度必须落在文件长度内，否则播放器会判定包损坏并直接跳过动画。
+
+6. 时间控制与队列
+-----------------
+- 若 `AnimFrameDesc.Duration` > 0，则优先生效，单位微秒。
+- 若 Duration 为 0，则使用 `frame_duration_us` 或 `TargetFps` 推导值。
+- 玩家会对每帧实际耗时取 max(要求, 最小 10 ms)，避免 Stall 过短。
+
+7. 兼容性
+---------
+- 容器文件顶部保留 32 字节对齐，帧数据按 4 字节对齐，以便直接映射到 GOP 缓冲。
+- 解析器允许 manifest 缺失，此时使用 header 默认值。
+- 未来版本可通过递增 `VersionMinor` 并在 manifest 中声明 `extensions` 来扩展字段。
+

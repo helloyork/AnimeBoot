@@ -1,0 +1,32 @@
+[Defines]
+  INF_VERSION                    = 0x0001001A
+  BASE_NAME                      = AnimeBoot
+  FILE_GUID                      = 2AAEE66F-8847-4C25-9EB4-4F816C0B8B58
+  MODULE_TYPE                    = UEFI_APPLICATION
+  VERSION_STRING                 = 0.1
+  ENTRY_POINT                    = UefiMain
+
+[Sources]
+  AnimeBoot.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  AnimeBootPkg/AnimeBootPkg.dec
+
+[LibraryClasses]
+  UefiLib
+  UefiApplicationEntryPoint
+  UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
+  BaseLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  PrintLib
+  DebugLib
+  DevicePathLib
+  FileHandleLib
+  GopBlitterLib
+  DisplayMathLib
+
+
