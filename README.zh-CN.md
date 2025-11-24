@@ -177,8 +177,9 @@ abtool preview build/splash.anim
     -TimestampUrl "http://timestamp.digicert.com"
 
 # 或者使用 shim 方案 (需要预先设置 shim)
-# 详情见 docs/secure_boot.txt
 ```
+
+对于更详细的签名指南，请参阅 [docs/signing_guide.zh-CN.md](docs/signing_guide.zh-CN.md)。
 
 ## 配置和格式说明
 

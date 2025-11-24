@@ -179,8 +179,9 @@ If the target system has Secure Boot enabled, the EFI application must be signed
     -TimestampUrl "http://timestamp.digicert.com"
 
 # Or use shim approach (requires pre-configured shim)
-# Details in docs/secure_boot.txt
 ```
+
+For more detailed signing guide, see [docs/signing_guide.md](docs/signing_guide.md).
 
 ## Configuration and Format Specifications
 
