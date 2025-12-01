@@ -78,6 +78,43 @@ AbOpenRoot(
     EFI_LOADED_IMAGE_PROTOCOL **LoadedImage);
 
 static EFI_STATUS
+AbOpenRootFromPath(
+    CONST CHAR16 *PathSpec,
+    EFI_FILE_PROTOCOL **Root);
+
+static EFI_STATUS
+AbEnumerateFatPartitions(
+    EFI_HANDLE **Handles,
+    UINTN *HandleCount);
+
+static EFI_STATUS
+AbFindPartitionByLabel(
+    CONST CHAR16 *Label,
+    EFI_HANDLE *Handle);
+
+static EFI_STATUS
+AbGetPartitionLabel(
+    EFI_HANDLE Handle,
+    CHAR16 *Label,
+    UINTN LabelSize);
+
+static EFI_STATUS
+AbParsePathSpec(
+    CONST CHAR16 *PathSpec,
+    CHAR16 *PartitionSpec,
+    UINTN PartitionSpecSize,
+    CHAR16 *FilePath,
+    UINTN FilePathSize);
+
+static EFI_STATUS
+AbLoadAnimationConfig(
+    EFI_FILE_PROTOCOL *Root,
+    ANIMATION_CONFIG *Config);
+
+static VOID
+AbFreeAnimationConfig(ANIMATION_CONFIG *Config);
+
+static EFI_STATUS
 AbPlayFromPackage(
     EFI_FILE_PROTOCOL *Root,
     GOP_STATE *GopState);
@@ -266,6 +303,7 @@ UefiMain(
   EFI_FILE_PROTOCOL *Root = NULL;
   EFI_LOADED_IMAGE_PROTOCOL *LoadedImage = NULL;
   GOP_STATE GopState;
+  ANIMATION_CONFIG Config;
 
   Status = AbInitGopState(&GopState);
   if (EFI_ERROR(Status)) {
@@ -278,14 +316,52 @@ UefiMain(
     return Status;
   }
 
-  EFI_STATUS PlaybackStatus = AbPlayFromPackage(Root, &GopState);
+  // Load animation configuration
+  Status = AbLoadAnimationConfig(Root, &Config);
+  if (EFI_ERROR(Status)) {
+    DEBUG((DEBUG_WARN, "Failed to load animation config: %r\n", Status));
+    // Fall back to default behavior
+    Config.AnimationPath = AbDuplicateString(DEFAULT_PACKAGE_PATH);
+    Config.ManifestPath = AbDuplicateString(DEFAULT_MANIFEST_PATH);
+    Config.UseCustomPartition = FALSE;
+  }
+
+  EFI_STATUS PlaybackStatus = AbPlayFromPackage(&Config, &GopState);
   if (EFI_ERROR(PlaybackStatus)) {
     DEBUG((DEBUG_WARN, "Package playback failed: %r\n", PlaybackStatus));
-    PlaybackStatus = AbPlayFromLoose(Root, &GopState);
+
+    // If using custom partition failed, try fallback to EFI partition
+    if (Config.UseCustomPartition) {
+      DEBUG((DEBUG_INFO, "Trying fallback to EFI partition\n"));
+      ANIMATION_CONFIG FallbackConfig;
+      FallbackConfig.AnimationPath = AbDuplicateString(DEFAULT_PACKAGE_PATH);
+      FallbackConfig.ManifestPath = AbDuplicateString(DEFAULT_MANIFEST_PATH);
+      FallbackConfig.UseCustomPartition = FALSE;
+
+      PlaybackStatus = AbPlayFromPackage(&FallbackConfig, &GopState);
+      AbFreeAnimationConfig(&FallbackConfig);
+
+      if (EFI_ERROR(PlaybackStatus)) {
+        PlaybackStatus = AbPlayFromLoose(&Config, &GopState);
+        if (EFI_ERROR(PlaybackStatus)) {
+          // Try fallback loose manifest too
+          FallbackConfig.AnimationPath = AbDuplicateString(DEFAULT_PACKAGE_PATH);
+          FallbackConfig.ManifestPath = AbDuplicateString(DEFAULT_MANIFEST_PATH);
+          FallbackConfig.UseCustomPartition = FALSE;
+          PlaybackStatus = AbPlayFromLoose(&FallbackConfig, &GopState);
+          AbFreeAnimationConfig(&FallbackConfig);
+        }
+      }
+    } else {
+      PlaybackStatus = AbPlayFromLoose(&Config, &GopState);
+    }
+
     if (EFI_ERROR(PlaybackStatus)) {
       DEBUG((DEBUG_WARN, "Loose manifest playback failed: %r\n", PlaybackStatus));
     }
   }
+
+  AbFreeAnimationConfig(&Config);
 
   if (Root != NULL) {
     Root->Close(Root);
@@ -338,16 +414,47 @@ AbOpenRoot(
 
 static EFI_STATUS
 AbPlayFromPackage(
-    EFI_FILE_PROTOCOL *Root,
+    ANIMATION_CONFIG *AnimConfig,
     GOP_STATE *GopState) {
   ANIM_PACKAGE_STATE Package;
   PLAYBACK_CONFIG Config;
   PACKAGE_PLAYBACK_CONTEXT Context;
+  EFI_FILE_PROTOCOL *Root = NULL;
   EFI_STATUS Status;
 
-  ZeroMem(&Package, sizeof(Package));
-  Status = AbLoadPackageFromPath(Root, DEFAULT_PACKAGE_PATH, &Package);
+  if (AnimConfig == NULL || AnimConfig->AnimationPath == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  // Open appropriate filesystem
+  if (AnimConfig->UseCustomPartition) {
+    Status = AbOpenRootFromPath(AnimConfig->AnimationPath, &Root);
+    if (EFI_ERROR(Status)) {
+      DEBUG((DEBUG_WARN, "Failed to open custom partition for animation: %r\n", Status));
+      return Status;
+    }
+  } else {
+    EFI_LOADED_IMAGE_PROTOCOL *LoadedImage = NULL;
+    Status = AbOpenRoot(gImageHandle, &Root, &LoadedImage);
+    if (EFI_ERROR(Status)) {
+      return Status;
+    }
+  }
+
+  // Extract just the file path part for loading
+  CHAR16 PartitionSpec[32];
+  CHAR16 FilePath[256];
+  Status = AbParsePathSpec(AnimConfig->AnimationPath, PartitionSpec,
+                          sizeof(PartitionSpec), FilePath, sizeof(FilePath));
   if (EFI_ERROR(Status)) {
+    Root->Close(Root);
+    return Status;
+  }
+
+  ZeroMem(&Package, sizeof(Package));
+  Status = AbLoadPackageFromPath(Root, FilePath, &Package);
+  if (EFI_ERROR(Status)) {
+    Root->Close(Root);
     return Status;
   }
 
@@ -359,20 +466,52 @@ AbPlayFromPackage(
   Context.Package = &Package;
   Status = AbRunPlayback(Package.Header.FrameCount, &Config, GopState, AbPackageFrameLoader, &Context);
   AbClosePackage(&Package);
+  Root->Close(Root);
   return Status;
 }
 
 static EFI_STATUS
 AbPlayFromLoose(
-    EFI_FILE_PROTOCOL *Root,
+    ANIMATION_CONFIG *AnimConfig,
     GOP_STATE *GopState) {
   LOOSE_MANIFEST_STATE Manifest;
   LOOSE_PLAYBACK_CONTEXT Context;
+  EFI_FILE_PROTOCOL *Root = NULL;
   EFI_STATUS Status;
 
-  ZeroMem(&Manifest, sizeof(Manifest));
-  Status = AbLoadLooseManifest(Root, DEFAULT_MANIFEST_PATH, &Manifest);
+  if (AnimConfig == NULL || AnimConfig->ManifestPath == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  // Open appropriate filesystem
+  if (AnimConfig->UseCustomPartition) {
+    Status = AbOpenRootFromPath(AnimConfig->ManifestPath, &Root);
+    if (EFI_ERROR(Status)) {
+      DEBUG((DEBUG_WARN, "Failed to open custom partition for manifest: %r\n", Status));
+      return Status;
+    }
+  } else {
+    EFI_LOADED_IMAGE_PROTOCOL *LoadedImage = NULL;
+    Status = AbOpenRoot(gImageHandle, &Root, &LoadedImage);
+    if (EFI_ERROR(Status)) {
+      return Status;
+    }
+  }
+
+  // Extract just the file path part for loading
+  CHAR16 PartitionSpec[32];
+  CHAR16 FilePath[256];
+  Status = AbParsePathSpec(AnimConfig->ManifestPath, PartitionSpec,
+                          sizeof(PartitionSpec), FilePath, sizeof(FilePath));
   if (EFI_ERROR(Status)) {
+    Root->Close(Root);
+    return Status;
+  }
+
+  ZeroMem(&Manifest, sizeof(Manifest));
+  Status = AbLoadLooseManifest(Root, FilePath, &Manifest);
+  if (EFI_ERROR(Status)) {
+    Root->Close(Root);
     return Status;
   }
 
@@ -385,6 +524,7 @@ AbPlayFromLoose(
       AbLooseFrameLoader,
       &Context);
   AbFreeLooseManifest(&Manifest);
+  Root->Close(Root);
   return Status;
 }
 
@@ -1563,6 +1703,338 @@ AbComputeDestPosition(
     *DestX = 0;
     *DestY = 0;
   }
+}
+
+static EFI_STATUS
+AbOpenRootFromPath(
+    CONST CHAR16 *PathSpec,
+    EFI_FILE_PROTOCOL **Root) {
+  EFI_STATUS Status;
+  CHAR16 PartitionSpec[32];
+  CHAR16 FilePath[256];
+  EFI_HANDLE PartitionHandle = NULL;
+
+  if (Root == NULL || PathSpec == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  *Root = NULL;
+
+  // Parse path specification
+  Status = AbParsePathSpec(PathSpec, PartitionSpec, sizeof(PartitionSpec),
+                          FilePath, sizeof(FilePath));
+  if (EFI_ERROR(Status)) {
+    return Status;
+  }
+
+  // If no partition spec, use default EFI partition
+  if (PartitionSpec[0] == L'\0') {
+    EFI_LOADED_IMAGE_PROTOCOL *LoadedImage = NULL;
+    EFI_HANDLE ImageHandle;
+
+    // Get current image handle
+    Status = gBS->HandleProtocol(
+        gImageHandle,
+        &gEfiLoadedImageProtocolGuid,
+        (VOID **)&LoadedImage);
+    if (EFI_ERROR(Status)) {
+      return Status;
+    }
+
+    return AbOpenRoot(gImageHandle, Root, &LoadedImage);
+  }
+
+  // Find partition by label or path
+  Status = AbFindPartitionByLabel(PartitionSpec, &PartitionHandle);
+  if (EFI_ERROR(Status)) {
+    DEBUG((DEBUG_WARN, "Failed to find partition '%s': %r\n", PartitionSpec, Status));
+    return Status;
+  }
+
+  // Open file system on the partition
+  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *FileSystem = NULL;
+  Status = gBS->HandleProtocol(
+      PartitionHandle,
+      &gEfiSimpleFileSystemProtocolGuid,
+      (VOID **)&FileSystem);
+  if (EFI_ERROR(Status)) {
+    return Status;
+  }
+
+  return FileSystem->OpenVolume(FileSystem, Root);
+}
+
+static EFI_STATUS
+AbEnumerateFatPartitions(
+    EFI_HANDLE **Handles,
+    UINTN *HandleCount) {
+  EFI_STATUS Status;
+  UINTN BufferSize = 0;
+  EFI_HANDLE *HandleBuffer = NULL;
+
+  if (Handles == NULL || HandleCount == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  *Handles = NULL;
+  *HandleCount = 0;
+
+  // Get all handles with SimpleFileSystem protocol
+  Status = gBS->LocateHandleBuffer(
+      ByProtocol,
+      &gEfiSimpleFileSystemProtocolGuid,
+      NULL,
+      &BufferSize,
+      &HandleBuffer);
+  if (EFI_ERROR(Status)) {
+    return Status;
+  }
+
+  // Filter FAT partitions (we'll check this by trying to open them)
+  EFI_HANDLE *FatHandles = NULL;
+  UINTN FatCount = 0;
+
+  FatHandles = AllocateZeroPool(BufferSize);
+  if (FatHandles == NULL) {
+    FreePool(HandleBuffer);
+    return EFI_OUT_OF_RESOURCES;
+  }
+
+  for (UINTN i = 0; i < BufferSize / sizeof(EFI_HANDLE); i++) {
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *FileSystem = NULL;
+    EFI_FILE_PROTOCOL *Root = NULL;
+
+    Status = gBS->HandleProtocol(
+        HandleBuffer[i],
+        &gEfiSimpleFileSystemProtocolGuid,
+        (VOID **)&FileSystem);
+    if (EFI_ERROR(Status)) {
+      continue;
+    }
+
+    Status = FileSystem->OpenVolume(FileSystem, &Root);
+    if (EFI_ERROR(Status)) {
+      continue;
+    }
+
+    // Try to read a small file to verify it's accessible
+    EFI_FILE_PROTOCOL *TestFile = NULL;
+    Status = Root->Open(Root, &TestFile, L"\\", EFI_FILE_MODE_READ, 0);
+    if (!EFI_ERROR(Status)) {
+      TestFile->Close(TestFile);
+      FatHandles[FatCount++] = HandleBuffer[i];
+    }
+
+    Root->Close(Root);
+  }
+
+  FreePool(HandleBuffer);
+
+  if (FatCount == 0) {
+    FreePool(FatHandles);
+    return EFI_NOT_FOUND;
+  }
+
+  *Handles = FatHandles;
+  *HandleCount = FatCount;
+  return EFI_SUCCESS;
+}
+
+static EFI_STATUS
+AbFindPartitionByLabel(
+    CONST CHAR16 *Label,
+    EFI_HANDLE *Handle) {
+  EFI_STATUS Status;
+  EFI_HANDLE *Handles = NULL;
+  UINTN HandleCount = 0;
+  CHAR16 PartitionLabel[64];
+
+  if (Handle == NULL || Label == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  *Handle = NULL;
+
+  Status = AbEnumerateFatPartitions(&Handles, &HandleCount);
+  if (EFI_ERROR(Status)) {
+    return Status;
+  }
+
+  for (UINTN i = 0; i < HandleCount; i++) {
+    Status = AbGetPartitionLabel(Handles[i], PartitionLabel, sizeof(PartitionLabel));
+    if (!EFI_ERROR(Status)) {
+      if (StrCmp(Label, PartitionLabel) == 0) {
+        *Handle = Handles[i];
+        FreePool(Handles);
+        return EFI_SUCCESS;
+      }
+    }
+  }
+
+  FreePool(Handles);
+  return EFI_NOT_FOUND;
+}
+
+static EFI_STATUS
+AbGetPartitionLabel(
+    EFI_HANDLE Handle,
+    CHAR16 *Label,
+    UINTN LabelSize) {
+  EFI_STATUS Status;
+  EFI_BLOCK_IO_PROTOCOL *BlockIo = NULL;
+  EFI_DEVICE_PATH_PROTOCOL *DevicePath = NULL;
+  EFI_DEVICE_PATH_PROTOCOL *Node = NULL;
+
+  if (Label == NULL || LabelSize == 0) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  Label[0] = L'\0';
+
+  // Try to get partition label from device path
+  Status = gBS->HandleProtocol(
+      Handle,
+      &gEfiDevicePathProtocolGuid,
+      (VOID **)&DevicePath);
+  if (EFI_ERROR(Status)) {
+    return Status;
+  }
+
+  Node = DevicePath;
+  while (!IsDevicePathEnd(Node)) {
+    if (DevicePathType(Node) == MEDIA_DEVICE_PATH &&
+        DevicePathSubType(Node) == MEDIA_PARTITION_DP) {
+      HARDDRIVE_DEVICE_PATH *HdNode = (HARDDRIVE_DEVICE_PATH *)Node;
+      // For now, return a generic label. In a full implementation,
+      // you might want to read the partition table or filesystem
+      UnicodeSPrint(Label, LabelSize, L"PART%02X", HdNode->PartitionNumber);
+      return EFI_SUCCESS;
+    }
+    Node = NextDevicePathNode(Node);
+  }
+
+  // Fallback: try to get from BlockIo
+  Status = gBS->HandleProtocol(
+      Handle,
+      &gEfiBlockIoProtocolGuid,
+      (VOID **)&BlockIo);
+  if (EFI_ERROR(Status)) {
+    return Status;
+  }
+
+  // Use media ID as label
+  UnicodeSPrint(Label, LabelSize, L"BLK%08X", BlockIo->Media->MediaId);
+  return EFI_SUCCESS;
+}
+
+static EFI_STATUS
+AbParsePathSpec(
+    CONST CHAR16 *PathSpec,
+    CHAR16 *PartitionSpec,
+    UINTN PartitionSpecSize,
+    CHAR16 *FilePath,
+    UINTN FilePathSize) {
+  CONST CHAR16 *ColonPos;
+  UINTN PartitionLen;
+  UINTN PathLen;
+
+  if (PathSpec == NULL || PartitionSpec == NULL || FilePath == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  // Look for colon separator (format: PARTITION:\path\to\file)
+  ColonPos = StrStr(PathSpec, L":");
+  if (ColonPos == NULL) {
+    // No partition spec, use default
+    PartitionSpec[0] = L'\0';
+    StrnCpyS(FilePath, FilePathSize / sizeof(CHAR16), PathSpec,
+             FilePathSize / sizeof(CHAR16) - 1);
+    return EFI_SUCCESS;
+  }
+
+  // Extract partition spec
+  PartitionLen = (UINTN)(ColonPos - PathSpec);
+  if (PartitionLen >= PartitionSpecSize / sizeof(CHAR16)) {
+    return EFI_BAD_BUFFER_SIZE;
+  }
+
+  StrnCpyS(PartitionSpec, PartitionSpecSize / sizeof(CHAR16), PathSpec, PartitionLen);
+  PartitionSpec[PartitionLen] = L'\0';
+
+  // Extract file path
+  PathLen = StrLen(ColonPos + 1);
+  if (PathLen >= FilePathSize / sizeof(CHAR16)) {
+    return EFI_BAD_BUFFER_SIZE;
+  }
+
+  StrCpyS(FilePath, FilePathSize / sizeof(CHAR16), ColonPos + 1);
+  return EFI_SUCCESS;
+}
+
+static EFI_STATUS
+AbLoadAnimationConfig(
+    EFI_FILE_PROTOCOL *Root,
+    ANIMATION_CONFIG *Config) {
+  EFI_STATUS Status;
+  CHAR8 *Json = NULL;
+  UINT32 Length = 0;
+  CHAR8 PathBuffer[256];
+
+  if (Config == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+
+  ZeroMem(Config, sizeof(ANIMATION_CONFIG));
+
+  // Try to load config from default location
+  Status = AbReadManifestFile(Root, L"\\EFI\\AnimeBoot\\config.json", &Json, &Length);
+  if (EFI_ERROR(Status)) {
+    // No config file, use defaults
+    Config->AnimationPath = AbDuplicateString(DEFAULT_PACKAGE_PATH);
+    Config->ManifestPath = AbDuplicateString(DEFAULT_MANIFEST_PATH);
+    Config->UseCustomPartition = FALSE;
+    return EFI_SUCCESS;
+  }
+
+  // Parse config JSON
+  if (AbJsonReadString(Json, "animation_path", PathBuffer, sizeof(PathBuffer))) {
+    Config->AnimationPath = AbAsciiPathToUnicode(PathBuffer);
+    Config->UseCustomPartition = (StrStr(Config->AnimationPath, L":") != NULL);
+  } else {
+    Config->AnimationPath = AbDuplicateString(DEFAULT_PACKAGE_PATH);
+    Config->UseCustomPartition = FALSE;
+  }
+
+  if (AbJsonReadString(Json, "manifest_path", PathBuffer, sizeof(PathBuffer))) {
+    Config->ManifestPath = AbAsciiPathToUnicode(PathBuffer);
+    if (!Config->UseCustomPartition) {
+      Config->UseCustomPartition = (StrStr(Config->ManifestPath, L":") != NULL);
+    }
+  } else {
+    Config->ManifestPath = AbDuplicateString(DEFAULT_MANIFEST_PATH);
+  }
+
+  FreePool(Json);
+  return EFI_SUCCESS;
+}
+
+static VOID
+AbFreeAnimationConfig(ANIMATION_CONFIG *Config) {
+  if (Config == NULL) {
+    return;
+  }
+
+  if (Config->AnimationPath != NULL) {
+    FreePool(Config->AnimationPath);
+    Config->AnimationPath = NULL;
+  }
+
+  if (Config->ManifestPath != NULL) {
+    FreePool(Config->ManifestPath);
+    Config->ManifestPath = NULL;
+  }
+
+  Config->UseCustomPartition = FALSE;
 }
 
 

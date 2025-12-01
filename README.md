@@ -18,7 +18,7 @@ AnimeBoot is a proof-of-concept project that plays animations (looking like anim
 ### Runtime Environment
 - **UEFI Firmware**: Supports GOP (Graphics Output Protocol)
 - **Architecture**: x86_64 (AMD64/Intel64)
-- **Storage**: ESP (EFI System Partition) with at least 50MB available space
+- **Storage**: ESP (EFI System Partition) with at least 50MB available space, or dedicated FAT32 partition for animations
 - **Secure Boot**: Optional support (complete signing solution provided)
 
 ## Quick Start
@@ -127,6 +127,67 @@ abtool preview build/splash.anim
 .\scripts\Install-AnimeBoot.ps1 -EfiBinary "..." -AnimSource "..." -SkipBcd
 ```
 
+#### Dedicated FAT32 Partition Deployment
+
+```powershell
+# Auto-create and use dedicated FAT32 partition (2GB)
+.\scripts\Install-AnimeBoot.ps1 `
+    -EfiBinary "AnimeBoot.efi" `
+    -AnimSource "build\splash.anim" `
+    -UseDedicatedPartition `
+    -PartitionLabel "ANIMDATA" `
+    -PartitionSizeGB 2 `
+    -AutoCreatePartition
+
+# Use existing FAT32 partition
+.\scripts\Install-AnimeBoot.ps1 `
+    -EfiBinary "AnimeBoot.efi" `
+    -AnimSource "build\splash.anim" `
+    -UseDedicatedPartition `
+    -PartitionLabel "MYANIMS"
+
+# Use partition without assigned drive letter
+.\scripts\Install-AnimeBoot.ps1 `
+    -EfiBinary "AnimeBoot.efi" `
+    -AnimSource "build\splash.anim" `
+    -UseDedicatedPartition `
+    -PartitionLabel "ANIMDATA"
+    # Script will automatically assign temporary drive letter if needed
+```
+
+**New Parameters:**
+- `-UseDedicatedPartition`: Store animations on dedicated FAT32 partition instead of ESP
+- `-PartitionLabel`: Label of the FAT32 partition (default: "ANIMDATA")
+- `-PartitionSizeGB`: Size of auto-created partition in GB (default: 2)
+- `-AutoCreatePartition`: Automatically create and format FAT32 partition if not found
+- `-ListPartitions`: List all available FAT32 partitions and exit (useful for finding partition labels)
+
+**Partition Handling:**
+- Script automatically detects if partition has an assigned drive letter
+- For partitions without drive letters, script temporarily assigns one for file operations
+- Temporary drive letter is automatically removed after deployment
+- Supports any FAT32 partition with a valid label, regardless of drive letter assignment
+
+**Finding Partitions:**
+```powershell
+# List all available FAT32 partitions
+.\scripts\Install-AnimeBoot.ps1 -ListPartitions
+```
+
+Example output:
+```
+Available FAT32 partitions:
+------------------------
+Drive:       Label:       Size:    Status:
+E:           ANIMDATA     2.00GB   Accessible
+(no letter)  BACKUP_ANIM  1.50GB   No drive letter
+```
+
+You can then use the label (even for partitions without drive letters):
+```powershell
+.\scripts\Install-AnimeBoot.ps1 -UseDedicatedPartition -PartitionLabel "BACKUP_ANIM" -EfiBinary "..." -AnimSource "..."
+```
+
 #### Manual Deployment
 
 For more precise control, manual deployment is available:
@@ -228,6 +289,54 @@ File Structure:
   "max_total_duration_ms": 8000,
   "notes": "Custom boot animation"
 }
+```
+
+### FAT32 Partition Support
+
+AnimeBoot supports storing animation resources on dedicated FAT32 partitions to avoid consuming EFI System Partition space. This is especially useful for large animation files.
+
+#### Configuration File
+
+Create a `config.json` file in the EFI directory:
+
+```json
+{
+  "animation_path": "ANIMDATA:\\animations\\boot.anim",
+  "manifest_path": "ANIMDATA:\\animations\\sequence.anim.json"
+}
+```
+
+- **Partition Specification**: Use format `PARTITIONLABEL:\\path\\to\\file`
+- **Automatic Fallback**: If the specified partition is not found, AnimeBoot automatically falls back to the default EFI partition
+- **Mixed Usage**: You can specify different partitions for animation and manifest files
+
+#### Example Setup
+
+1. Create a FAT32 partition and label it "ANIMDATA"
+2. Copy your animation files to this partition
+3. Create the config.json file in `S:\EFI\AnimeBoot\config.json`
+4. Deploy AnimeBoot EFI application as usual
+
+**Example config.json:**
+
+```json
+{
+  "animation_path": "ANIMDATA:\\animations\\splash.anim",
+  "manifest_path": "ANIMDATA:\\animations\\sequence.anim.json"
+}
+```
+
+**PowerShell Script Automation:**
+
+The installation script can handle all of this automatically:
+
+```powershell
+# One-command setup with dedicated partition
+.\scripts\Install-AnimeBoot.ps1 `
+    -EfiBinary "AnimeBoot.efi" `
+    -AnimSource "build\splash.anim" `
+    -UseDedicatedPartition `
+    -AutoCreatePartition
 ```
 
 ### Loose Files Mode

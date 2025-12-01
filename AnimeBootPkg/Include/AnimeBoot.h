@@ -35,5 +35,11 @@ typedef struct {
   CHAR16 *BasePath;
 } FILE_CONTEXT;
 
+typedef struct {
+  CHAR16 *AnimationPath;     // Path to animation file (can include partition spec)
+  CHAR16 *ManifestPath;      // Path to manifest file (can include partition spec)
+  BOOLEAN UseCustomPartition; // Whether to use custom partition instead of EFI partition
+} ANIMATION_CONFIG;
+
 #endif  // ANIMEBOOT_MAIN_H_
 
